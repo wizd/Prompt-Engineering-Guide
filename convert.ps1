@@ -11,7 +11,7 @@ Get-ChildItem -Path $inputDir -Recurse | Remove-Item -Force -Recurse
 Write-Host "第1步：转换所有.zh.mdx文件到markdown..."
 
 # 使用Join-Path构建pages目录的完整路径
-$pagesDir = Join-Path $scriptDir "..\pages"
+$pagesDir = Join-Path $scriptDir ".\pages"
 $mdxFiles = Get-ChildItem -Path $pagesDir -Filter "*.zh.mdx" -Recurse
 if (-not $mdxFiles) {
     Write-Warning "未找到任何.zh.mdx文件在路径: $pagesDir"
@@ -51,6 +51,27 @@ foreach ($mdxFile in $mdxFiles) {
                 Where-Object { -not $_.Contains('import ') -and -not $_.Contains('<ContentFileNames') } |
                 Set-Content $targetFile
         }
+
+        # 处理生成的markdown文件内容
+        $content = Get-Content $targetFile
+        $newContent = $content | ForEach-Object {
+            if ($_ -eq '---') {
+                # 如果行只包含 ---, 则删除该行（返回空）
+                return
+            }
+            elseif ($_ -match '^---(.+)') {
+                # 如果行以 --- 开头，删除 --- 并保留剩余内容
+                return $matches[1].TrimStart()
+            }
+            else {
+                # 其他行保持不变
+                return $_
+            }
+        }
+        
+        # 将处理后的内容写回文件
+        $newContent | Set-Content $targetFile -Force
+
     }
     catch {
         Write-Error "处理文件时出错: $($mdxFile.FullName)`n$_"
@@ -59,6 +80,25 @@ foreach ($mdxFile in $mdxFiles) {
 }
 
 Write-Host "`n第2步：生成epub文件..."
+
+# 添加图片处理逻辑
+$imagesDir = Join-Path $scriptDir ".\pages\img"
+$targetImagesDir = Join-Path $inputDir "img"
+
+# 复制图片文件夹
+if (Test-Path $imagesDir) {
+    Write-Host "复制图片资源..."
+    Copy-Item -Path $imagesDir -Destination $targetImagesDir -Recurse -Force
+}
+
+# 更新markdown文件中的图片路径
+$mdFiles = Get-ChildItem -Path $inputDir -Filter "*.md" -Recurse
+foreach ($mdFile in $mdFiles) {
+    $content = Get-Content $mdFile.FullName -Raw
+    # 将 ../../img 替换为 ./img
+    $content = $content -replace '\.\./\.\./img', './img'
+    $content | Set-Content $mdFile.FullName -Force
+}
 
 # 获取所有转换后的md文件
 $mdFiles = Get-ChildItem -Path $inputDir -Filter "*.md" -Recurse | Sort-Object FullName
@@ -69,6 +109,9 @@ foreach ($mdFile in $mdFiles) {
     # 使用双引号包裹文件路径，以处理包含空格的路径
     $pandocArgs += "`"$($mdFile.FullName)`""
 }
+
+# pandoc 命令参数添加资源目录
+$pandocArgs += "--resource-path=`"$inputDir`""
 
 # 修改输出文件参数，确保路径被正确引用
 $outputFile = Join-Path $outputDir "PromptEngineering-zh.epub"
@@ -83,7 +126,7 @@ $pandocArgs += "lang=zh-CN"
 $pandocArgs += "--toc"
 $pandocArgs += "--toc-depth=2"
 $pandocArgs += "--epub-chapter-level=2"
-$pandocArgs += "--css=../pages/style.css"
+$pandocArgs += "--css=./pages/style.css"
 
 Write-Host "正在生成epub文件..."
 Write-Host "执行命令: pandoc $($pandocArgs -join ' ')"
