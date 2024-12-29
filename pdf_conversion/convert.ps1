@@ -13,19 +13,49 @@ Write-Host "第1步：转换所有.zh.mdx文件到markdown..."
 # 使用Join-Path构建pages目录的完整路径
 $pagesDir = Join-Path $scriptDir "..\pages"
 $mdxFiles = Get-ChildItem -Path $pagesDir -Filter "*.zh.mdx" -Recurse
+if (-not $mdxFiles) {
+    Write-Warning "未找到任何.zh.mdx文件在路径: $pagesDir"
+    exit
+}
 
 foreach ($mdxFile in $mdxFiles) {
-    # 修正相对路径计算
-    $relativePath = $mdxFile.FullName.Replace($pagesDir + "\", "")
-    $targetDir = Join-Path $inputDir (Split-Path $relativePath)
-    $targetFile = Join-Path $inputDir ($relativePath -replace "\.mdx$", ".md")
-    
-    # 创建目标目录
-    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-    
-    # 使用npx mdx-to-md进行转换
-    Write-Host "正在转换: $relativePath"
-    npx mdx-to-md $mdxFile.FullName $targetFile
+    try {
+        # 修复相对路径计算逻辑
+        $fullPath = $mdxFile.FullName
+        $pagesPath = (Resolve-Path $pagesDir).Path
+        
+        if ($fullPath.StartsWith($pagesPath)) {
+            $relativePath = $fullPath.Substring($pagesPath.Length).TrimStart('\')
+        } else {
+            Write-Warning "文件不在pages目录中: $fullPath"
+            continue
+        }
+        
+        $targetDir = Join-Path $inputDir (Split-Path $relativePath)
+        $targetFile = Join-Path $inputDir ($relativePath -replace "\.mdx$", ".md")
+        
+        # 确保目标目录存在
+        if (-not (Test-Path $targetDir)) {
+            New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+        }
+        
+        # 使用npx mdx-to-md进行转换，添加错误处理
+        Write-Host "正在转换: $relativePath"
+        $env:NODE_ENV = "production"  # 设置 Node 环境为生产环境
+        $result = npx mdx-to-md $mdxFile.FullName $targetFile --platform=node --external:components/* 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "转换失败: $relativePath`n$result"
+            
+            # 尝试创建一个简单的 markdown 文件作为备选
+            Get-Content $mdxFile.FullName | 
+                Where-Object { -not $_.Contains('import ') -and -not $_.Contains('<ContentFileNames') } |
+                Set-Content $targetFile
+        }
+    }
+    catch {
+        Write-Error "处理文件时出错: $($mdxFile.FullName)`n$_"
+        continue
+    }
 }
 
 Write-Host "`n第2步：生成epub文件..."
@@ -36,14 +66,16 @@ $mdFiles = Get-ChildItem -Path $inputDir -Filter "*.md" -Recurse | Sort-Object F
 # 构建pandoc命令参数
 $pandocArgs = @()
 foreach ($mdFile in $mdFiles) {
-    $pandocArgs += $mdFile.FullName
+    # 使用双引号包裹文件路径，以处理包含空格的路径
+    $pandocArgs += "`"$($mdFile.FullName)`""
 }
 
-# 添加输出参数
+# 修改输出文件参数，确保路径被正确引用
+$outputFile = Join-Path $outputDir "PromptEngineering-zh.epub"
 $pandocArgs += "-o"
-$pandocArgs += "$outputDir/PromptEngineering-zh.epub"
+$pandocArgs += "`"$outputFile`""
 $pandocArgs += "--metadata"
-$pandocArgs += "title=Prompt Engineering 指南"
+$pandocArgs += "title=`"Prompt Engineering 指南`""
 $pandocArgs += "--metadata"
 $pandocArgs += "author=DAIR.AI"
 $pandocArgs += "--metadata"
@@ -57,19 +89,22 @@ Write-Host "正在生成epub文件..."
 Write-Host "执行命令: pandoc $($pandocArgs -join ' ')"
 
 try {
-    $pandocProcess = Start-Process -FilePath "pandoc" -ArgumentList $pandocArgs -Wait -NoNewWindow -PassThru
+    # 构建完整的命令字符串
+    $pandocCmd = "pandoc $($pandocArgs -join ' ')"
     
-    if ($pandocProcess.ExitCode -eq 0) {
-        Write-Host "epub文件生成成功！文件保存在: $outputDir/PromptEngineering-zh.epub"
+    # 使用 Invoke-Expression 执行命令
+    $result = Invoke-Expression $pandocCmd
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "epub文件生成成功！文件保存在: $outputFile"
         
-        # 检查epub文件是否实际生成
-        if (Test-Path "$outputDir/PromptEngineering-zh.epub") {
+        if (Test-Path $outputFile) {
             Write-Host "epub文件已成功创建。"
         } else {
             Write-Error "epub文件未能成功创建。"
         }
     } else {
-        Write-Error "Pandoc 转换过程失败，退出代码: $($pandocProcess.ExitCode)"
+        Write-Error "Pandoc 转换过程失败，退出代码: $LASTEXITCODE"
     }
 } catch {
     Write-Error "生成epub时出错: $_"

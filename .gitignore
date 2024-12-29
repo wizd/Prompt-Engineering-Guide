@@ -19,3 +19,7 @@ pages/research/local_research/
 .next
 node_modules
 prompts
+
+# pdf
+pdf_conversion/input/
+pdf_conversion/output/
